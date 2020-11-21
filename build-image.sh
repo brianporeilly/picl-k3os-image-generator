@@ -78,22 +78,26 @@ if [ -z "$IMAGE_TYPE" -o "$IMAGE_TYPE" = "help" -o "$IMAGE_TYPE" = "--help" -o "
 	echo "Supported image types:" >&2
 	echo "  raspberrypi - Raspberry Pi model 3B+/4." >&2
 	echo "  orangepipc2 - Orange Pi PC 2" >&2
+	echo "  rock64 - Rock64" >&2
 	echo "  all         - Calls itself once for each supported image type" >&2
 	exit 1
 elif [ "$IMAGE_TYPE" = "raspberrypi" ]; then
 	echo "Building an image for the Raspberry Pi model 3B+/4."
 elif [ "$IMAGE_TYPE" = "orangepipc2" ]; then
 	echo "Building an image for the Orange Pi PC 2."
+elif [ "$IMAGE_TYPE" = "rock64" ]; then
+	echo "Building an image for the Rock64."
 elif [ "$IMAGE_TYPE" = "all" ]; then
 	$0 "raspberrypi"
 	$0 "orangepipc2"
+	$0 "rock64"
 	exit 0
 else
 	echo "Unsupported image type \"$IMAGE_TYPE\". See \"$0 help\" for more information." >&2
 	exit 1
 fi
 
-if [ "$IMAGE_TYPE" = "orangepipc2" ]; then
+if [ "$IMAGE_TYPE" = "orangepipc2" ] || [ "$IMAGE_TYPE" = "rock64" ]; then
 	# mkimage is in u-boot-tools
 	assert_tool mkimage
 fi
@@ -124,6 +128,18 @@ elif [ "$IMAGE_TYPE" = "orangepipc2" ]; then
 		7z x Armbian_orangepipc2_buster_current.7z \*.img
 		dd of=armbian_orangepipc2.img bs=1024 count=4096 < Armbian_*_Orangepipc2_buster_current_*.img
 		rm Armbian_*_Orangepipc2_buster_current_*.img Armbian_orangepipc2_buster_current.7z
+		popd
+	fi
+elif [ "$IMAGE_TYPE" = "rock64" ]; then
+	dl_dep linux-dtb-dev-rockchip64.deb https://apt.armbian.com/pool/main/l/linux-5.8.6-rockchip64/linux-dtb-dev-rockchip64_20.08.1_arm64.deb
+	dl_dep linux-image-dev-rockchip64.deb https://apt.armbian.com/pool/main/l/linux-5.8.6-rockchip64/linux-image-dev-rockchip64_20.08.1_arm64.deb
+
+	if [ ! -f "deps/armbian_rock64.img" ]; then
+		pushd deps
+		wget -O Armbian_rock64_focal_current.img.xz https://dl.armbian.com/rock64/archive/Armbian_20.08.1_Rock64_focal_current_5.8.6.img.xz
+		unxz Armbian_rock64_focal_current.img.xz
+		dd of=armbian_rock64.img bs=1024 count=4096 < Armbian_rock64_focal_current.img
+		rm Armbian_rock64_focal_current.img
 		popd
 	fi
 fi
@@ -186,6 +202,16 @@ elif [ "$IMAGE_TYPE" = "orangepipc2" ]; then
 
 	# copy everything before the first partition, except the partition table
 	dd if=deps/armbian_orangepipc2.img of=$IMAGE bs=512 skip=1 seek=1 count=8191 conv=notrunc
+elif [ "$IMAGE_TYPE" = "rock64" ]; then
+	# Create a single partition; bootloader is copied from armbian
+	# at specific locations before the first partition. The partition
+	# will be resized to the SD card's maximum on first boot.
+	truncate -s 700M $IMAGE
+	parted -s $IMAGE mklabel msdos
+	parted -s $IMAGE unit s mkpart primary 8192 100%
+
+	# copy everything before the first partition, except the partition table
+	dd if=deps/armbian_rock64.img of=$IMAGE bs=512 skip=1 seek=1 count=8191 conv=notrunc
 fi
 
 LODEV=`sudo losetup --show -f $IMAGE`
@@ -196,7 +222,7 @@ if [ "$IMAGE_TYPE" = "raspberrypi" ]; then
 	LODEV_BOOT=${LODEV}p1
 	LODEV_ROOT=${LODEV}p2
 	sudo mkfs.fat $LODEV_BOOT
-elif [ "$IMAGE_TYPE" = "orangepipc2" ]; then
+elif [ "$IMAGE_TYPE" = "orangepipc2" ] || [ "$IMAGE_TYPE" = "rock64" ]; then
 	LODEV_ROOT=${LODEV}p1
 fi
 
@@ -248,6 +274,12 @@ elif [ "$IMAGE_TYPE" = "orangepipc2" ]; then
 extraargs=elevator=deadline rootwait init=/sbin/init.resizefs ro
 EOF
 	sudo install -m 0644 -o root -g root orangepipc2-boot.cmd root/boot/boot.cmd
+	sudo mkimage -C none -A arm -T script -d root/boot/boot.cmd root/boot/boot.scr
+elif [ "$IMAGE_TYPE" = "rock64" ]; then
+	cat <<EOF | sudo tee root/boot/env.txt >/dev/null
+extraargs=elevator=deadline rootwait init=/sbin/init.resizefs ro
+EOF
+	sudo install -m 0644 -o root -g root rockchip64-boot.cmd root/boot/boot.cmd
 	sudo mkimage -C none -A arm -T script -d root/boot/boot.cmd root/boot/boot.scr
 fi
 
@@ -313,6 +345,11 @@ if [ "$IMAGE_TYPE" = "orangepipc2" ]; then
 	sudo ln -s $(cd root/boot; ls -d dtb-*-sunxi64 | head -n1) root/boot/dtb
 	unpack_deb "linux-image-dev-sunxi64.deb" "root"
 	sudo ln -s $(cd root/boot; ls -d vmlinuz-*-sunxi64 | head -n1) root/boot/Image
+elif [ "$IMAGE_TYPE" = "rock64" ]; then
+	unpack_deb "linux-dtb-dev-rockchip64.deb" "root"
+	sudo ln -s $(cd root/boot; ls -d dtb-*-rockchip64 | head -n1) root/boot/dtb
+	unpack_deb "linux-image-dev-rockchip64.deb" "root"
+	sudo ln -s $(cd root/boot; ls -d vmlinuz-*-rockchip64 | head -n1) root/boot/Image
 elif [ "$IMAGE_TYPE" = "raspberrypi" ]; then
   BRCMTMP=$(mktemp -d)
   7z e -y deps/rpi-firmware-nonfree-master.zip -o"$BRCMTMP" "firmware-nonfree-master/brcm/*" > /dev/null
